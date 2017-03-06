@@ -30,6 +30,7 @@
 #include "../include/json11.hpp"
 #include "../include/util.h"
 #include "../include/fixedqueue.h"
+#include "../include/panorama.h"
 
 
 using namespace std;
@@ -41,6 +42,8 @@ using namespace json11;
 bool g_isBebug = false;
 vector<Rect> g_detectedArea;
 
+
+//
 bool checkTrackerAlgType(String& trackerAlgo);
 bool labelling(Mat &grayImg, Rect2d &dtcRect, int minArea);
 bool searchMotion(Mat &grayImg, Mat &dstImg, vector<Rect> dstRect, const vector<Rect> &currRect, int minArea, int maxArea);
@@ -409,38 +412,36 @@ int pano_test(){
 
 int pano_test2(){
 
-    int camNum = 3;
-    VideoCapture vcap[3];
-    string camAddress[3];
-    camAddress[0] = "rtsp://192.168.5.103:554/s1";
-    camAddress[1] = "rtsp://192.168.5.7:554/s1";
-    camAddress[2] = "rtsp://192.168.5.118:554/s1";
-//    camAddress[3] = "rtsp://192.168.5.8:554/s1";
-
-
-    Mat frame[3];
-    string window_name[3];
-    bool isVideo = false;
+    int camNum = 4;
+    VideoCapture vcap[4];
+    string camAddress[4];
+    Panorama pano;
+//    pano.setGpu(true);
+    Mat result;
+    TickMeter meter;
 
     if(g_isBebug){
         for(int i=0; i<camNum; i++){
+            camAddress[i] = strsprintf("./Videos/cam%d.avi", i+1);
+        }
+    }else{
+        camAddress[0] = "rtsp://192.168.5.103:554/s1";
+        camAddress[1] = "rtsp://192.168.5.7:554/s1";
+        camAddress[2] = "rtsp://192.168.5.118:554/s1";
+        camAddress[3] = "rtsp://192.168.5.8:554/s1";
+    }
+
+//    Mat frame[3];
+    vector<Mat> frame(4);
+    string window_name[4];
+    bool isVideo = true;
+
+    if(!isVideo){
+        for(int i=0; i<camNum; i++){
             window_name[i] = strsprintf("camNo%d", i+1);
-            if(!isVideo){
-                camAddress[i] = strsprintf("./images/%d.jpg", i+1);
-                frame[i] = imread(camAddress[i]);
-            }else{
-                for(int i=0; i<camNum; i++){
-                    camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
-                    if (!vcap[i].open(camAddress[i])) {
-                        cout << "error opening camera stream ...." << i << endl;
-                        return -1;
-                    }else{
-                        if(!vcap[i].read(frame[i])){
-                            return -1;
-                        }
-                    }
-                }
-            }
+            camAddress[i] = strsprintf("./images/cam%d.jpg", i+1);
+//            frame[i] = imread(camAddress[i], IMREAD_GRAYSCALE );
+
         }
         while (1) {
             for(int i=0; i<camNum; i++){
@@ -451,6 +452,7 @@ int pano_test2(){
                 break;
             }
         }
+        pano.estimateAndCompose(frame, result);
 
     }else{
 
@@ -462,32 +464,42 @@ int pano_test2(){
             window_name[i] = strsprintf("camNo%d", i+1);
         }
 
-
-        bool is_first = false;
+        bool is_first = true;
         while (1) {
             for(int i=0; i<camNum; i++){
                 if(!vcap[i].read(frame[i])){
                     cout << "capture error" << endl;
                     break;
                 }
-                imshow(window_name[i], frame[i]);
+//                imshow(window_name[i], frame[i]);
             }
+            meter.reset();
+            meter.start();
+            if(is_first){
+                pano.estimateAndCompose(frame, result);
+                is_first = false;
+            }else{
+                pano.composePanorama(frame, result);
+            }
+            meter.stop();
+            std::cout << meter.getTimeMilli() << "ms" << std::endl;
 
+            imshow("dst img", result);
             if(waitKey(10) == 27){
                 break;
             }
         }
-        for(int i=0; i<3; i++){
-            string filename = strsprintf("ssscam%d.jpg", i+1);
-            imwrite(filename, frame[i]);
-            vcap[i].release();
-        }
     }
 
     destroyAllWindows();
-    stich3(frame);
+
+
+//    stich3(frame);
     return 0;
 }
+
+
+
 
 
 bool hFromRansac( Mat &image1, Mat &image2, Mat &homography)
@@ -611,7 +623,6 @@ bool hFromRansac( Mat &image1, Mat &image2, Mat &homography)
 }
 
 
-
 int stich3(Mat (&srcImg)[3]){
     // Gray_scale
     Mat grayImg[3];
@@ -619,89 +630,77 @@ int stich3(Mat (&srcImg)[3]){
         cvtColor(srcImg[i], grayImg[i], COLOR_BGR2GRAY);
     }
 
+//    //1と2
+//    Mat H12;
+//    if(!hFromRansac( grayImg[0], grayImg[1], H12)){
+//        cout << "homograpy error H12" << endl;
+//        return -1;
+//    }
+//    Mat result1;
+//    Size newSize = getDistSize(H12, grayImg[1]);
+//    warpPerspective( grayImg[0], result1, H12, newSize);
+//    Mat result2 = result1;
+
+
     //1と2
     Mat H12;
-    if(!hFromRansac( grayImg[1], grayImg[0], H12)){
+    if(!hFromRansac( grayImg[2], grayImg[1], H12)){
         cout << "homograpy error H12" << endl;
         return -1;
     }
 
     Mat result1;
-    Size newSize = getDistSize(H12, grayImg[0]);
-    newSize.width = newSize.width*0.98;
-    warpPerspective( grayImg[1], result1, H12, newSize);
-//    warpPerspective( grayImg[1], result1, H12, Size( grayImg[0].cols * 1.5 , grayImg[0].rows ) );
-    for( int y = 0 ; y < grayImg[0].rows ; ++y ){
-        for( int x = 0 ; x < grayImg[0].cols ; ++x ){
-            result1.at<uchar>( y, x ) = grayImg[0].at<uchar>( y, x );
+    Size size1 = getDistSize(H12, grayImg[1]);
+    size1.width = size1.width*0.99;
+    warpPerspective( grayImg[2], result1, H12, size1);
+    for( int y = 0 ; y < grayImg[1].rows ; ++y ){
+        for( int x = 0 ; x < grayImg[1].cols ; ++x ){
+            result1.at<uchar>( y, x ) = grayImg[1].at<uchar>( y, x );
         }
     }
 
-    //2と3
-    Mat H23;
-//    if(!hFromRansac( grayImg[2], grayImg[1], H23 )){
-    if(!hFromRansac( grayImg[2], result1, H23 )){
-        cout << "homograpy error H23" << endl;
+
+    //画像を左右反転する
+    flip( grayImg[0], grayImg[0], 1 );
+    flip( grayImg[1], grayImg[1], 1 );
+
+    //0と1
+    Mat H01;
+    if (!hFromRansac( grayImg[0], grayImg[1], H01 )){
+        cout << "homograpy error H01" << endl;
         return -1;
     }
     Mat result2;
-    Size ssSize = getDistSize(H23, result1);
-    warpPerspective( grayImg[2], result2, H23, ssSize );
+    Size size2 = getDistSize(H01, grayImg[1]);
+    size2.width = size2.width*0.99;
+    warpPerspective( grayImg[0], result2, H01, size2 );
+    flip(result2, result2, 1);
+    size2.width  = size2.width - grayImg[1].cols;
 
-//    Mat H123 = H23*H12;
-//    Size ssSize = getDistSize(H123, result1);
-//////    Size sSize = getDistSize(H23, grayImg[1]);
-//////    Size ssSize;
-//////    ssSize.width = sSize.width+result1.cols;
-//////    ssSize.height = sSize.height;
-//////    ssSize.width = ssSize.width*0.98;
-//    warpPerspective( grayImg[2], result2, H123, ssSize, INTER_CUBIC );
-////    warpPerspective( grayImg[2], result2, H23*H12, Size( result1.cols * 1.5 , result1.rows ) );
+    // calc Dist size
+    Size dstSize;
+    dstSize.height = size1.height;
+    dstSize.width = size1.width + size2.width;
+    Mat dstImg = Mat::zeros(dstSize, CV_8U);
+
+    //Copy
+    for( int y = 0 ; y < result2.rows ; y++ ){
+        for( int x = 0 ; x < size2.width; x++ ){
+            dstImg.at<uchar>( y, x ) = result2.at<uchar>( y, x );
+        }
+    }
     for( int y = 0 ; y < result1.rows ; y++ ){
-        for( int x = 0 ; x < result1.cols ; x++ ){
-            result2.at<uchar>( y, x ) = result1.at<uchar>( y, x );
+        for( int x = 0 ; x < result1.cols; x++ ){
+            dstImg.at<uchar>( y, x+size2.width ) = result1.at<uchar>( y, x );
         }
     }
 
-//    //画像を反転して元に戻す
-//    flip( result2, result2, 1 );
-
-
-//    //画像を左右反転する
-//    flip( grayImg[1], grayImg[1], 1 );
-//    flip( grayImg[2], grayImg[2], 1 );
-//    flip( result1, result1, 1 );
-
-//    //2と3
-//    Mat H23 = hFromRansac( grayImg[2], grayImg[1] );
-//    Mat result2;
-//    warpPerspective( grayImg[2], result2, H23, Size( result1.cols * 1.5 , result1.rows ) );
-
-//    //右に移動させる
-//    for ( int y = result2.rows -1; y >= 0; y-- ){
-//        for ( int x = result2.cols -1; x >= 0; x-- ){
-//            int dx = 1.25*grayImg[2].cols;
-//            if ( grayImg[2].cols <= x +dx ){
-//                continue;
-//            }
-//            result2.at<uchar>( y, x + dx ) = result2.at<uchar>( y , x);
-//            result2.at<uchar>( y , x) = 0;
-//        }
-//    }
-
-//    for( int y = 0 ; y < result1.rows ; y++ ){
-//        for( int x = 0 ; x < result1.cols ; x++ ){
-//            result2.at<uchar>( y, x ) = result1.at<uchar>( y, x );
-//        }
-//    }
-
-//    //画像を反転して元に戻す
-//    flip( result2, result2, 1 );
-
     //画像を表示する
-    imshow( "Mosaicing", result2 );
+    imshow( "Mosaicing", dstImg );
+//    imshow( "result1", result1 );
+//    imshow( "result2", result2 );
     waitKey();
-    imwrite("./Result/Mosaicing.jpg", result2);
+    imwrite("./Result/Mosaicing.jpg", dstImg);
 
 
     return 0;
