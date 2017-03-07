@@ -26,6 +26,7 @@
 #include "cuda_runtime.h"
 #include "opencv2/cudalegacy.hpp"
 #include "opencv2/calib3d/calib3d.hpp"
+#include "opencv2/cudaoptflow.hpp"
 
 #include "../include/json11.hpp"
 #include "../include/util.h"
@@ -44,7 +45,6 @@ vector<Rect> g_detectedArea;
 
 
 //
-bool checkTrackerAlgType(String& trackerAlgo);
 bool labelling(Mat &grayImg, Rect2d &dtcRect, int minArea);
 bool searchMotion(Mat &grayImg, Mat &dstImg, vector<Rect> dstRect, const vector<Rect> &currRect, int minArea, int maxArea);
 int trackVehicle();
@@ -58,22 +58,6 @@ Size getDistSize(Mat &H, Mat &srcImg);
 
 
 
-bool checkTrackerAlgType(cv::String& trackerAlgo)
-{
-    if (trackerAlgo == "BOOSTING" ||
-        trackerAlgo == "MIL" ||
-        trackerAlgo == "TLD" ||
-        trackerAlgo == "MEDIANFLOW" ||
-        trackerAlgo == "KCF" ||
-        trackerAlgo == "GOTURN")
-    {
-        cout << "Tracker Algorithm Type: " << trackerAlgo << endl;
-    }
-    else{
-        CV_Error(Error::StsError, "Unsupported algorithm type " + trackerAlgo + " is specified.");
-    }
-    return true;
-}
 
 bool labelling(Mat &grayImg, Rect2d &dtcRect, int minArea=100)
 {
@@ -105,6 +89,7 @@ bool labelling(Mat &grayImg, Rect2d &dtcRect, int minArea=100)
             dtcRect.y = (double)y;
             dtcRect.width = (double)width;
             dtcRect.height = (double)height;
+            minArea = area;
             isDetect = true;
         }
     }
@@ -240,6 +225,8 @@ double clacLength(Point2f p1, Point2f p2)
     double length = pow( (p2.x-p1.x)*(p2.x-p1.x) + (p2.y-p1.y)*(p2.y-p1.y), 0.5 );
     return length;
 }
+
+
 
 int optFlowTracking(void)
 {
@@ -417,12 +404,15 @@ int pano_test2(){
     string camAddress[4];
     Panorama pano;
 //    pano.setGpu(true);
-    Mat result;
     TickMeter meter;
+    Mat grayImg, knnImg;
+    Ptr<BackgroundSubtractorKNN> pKNN = createBackgroundSubtractorKNN();
+    bool isFirst = true;
+    Rect2d dtcRect;
 
     if(g_isBebug){
         for(int i=0; i<camNum; i++){
-            camAddress[i] = strsprintf("./Videos/cam%d.avi", i+1);
+            camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
         }
     }else{
         camAddress[0] = "rtsp://192.168.5.103:554/s1";
@@ -433,6 +423,8 @@ int pano_test2(){
 
 //    Mat frame[3];
     vector<Mat> frame(4);
+    vector<Mat> srcImg(4);
+    Mat panoImg;
     string window_name[4];
     bool isVideo = true;
 
@@ -452,7 +444,7 @@ int pano_test2(){
                 break;
             }
         }
-        pano.estimateAndCompose(frame, result);
+        pano.estimateAndCompose(frame, panoImg);
 
     }else{
 
@@ -471,20 +463,35 @@ int pano_test2(){
                     cout << "capture error" << endl;
                     break;
                 }
+                resize(frame[i], srcImg[i], Size(), 0.5, 0.5);
+                cvtColor(srcImg[i], srcImg[i], COLOR_BGR2GRAY);
 //                imshow(window_name[i], frame[i]);
             }
             meter.reset();
             meter.start();
             if(is_first){
-                pano.estimateAndCompose(frame, result);
+                pano.estimateAndCompose(srcImg, panoImg);
                 is_first = false;
             }else{
-                pano.composePanorama(frame, result);
+                pano.composePanorama(srcImg, panoImg);
             }
             meter.stop();
             std::cout << meter.getTimeMilli() << "ms" << std::endl;
 
-            imshow("dst img", result);
+            //tracking
+//            cvtColor(result, grayImg, COLOR_BGR2GRAY);
+            pKNN->apply(panoImg, knnImg);
+
+            if(!isFirst){
+                if( labelling(knnImg, dtcRect, 800) ){
+                    rectangle(panoImg, dtcRect, Scalar(200,200,200), 2);
+                }
+            }else{
+                isFirst = false;
+            }
+
+            imshow("panorama image", panoImg);
+
             if(waitKey(10) == 27){
                 break;
             }
@@ -498,363 +505,171 @@ int pano_test2(){
     return 0;
 }
 
-
-
-
-
-bool hFromRansac( Mat &image1, Mat &image2, Mat &homography)
+static void download(const cuda::GpuMat& d_mat, vector< uchar>& vec)
 {
-    int minHessian = 400;
+    vec.resize(d_mat.cols);
+    Mat mat(1, d_mat.cols, CV_8UC1, (void*)&vec[0]);
+    d_mat.download(mat);
+}
 
-    Ptr<Feature2D> detector;
-    int detectorType = 1;
-    switch (detectorType) {
-        case 0:
-        default:
-            detector = xfeatures2d::SURF::create();
-            break;
-        case 1:
-            detector = xfeatures2d::SIFT::create();
-            break;
-        case 2:
-            detector = ORB::create();
-            break;
-        case 3:
-            detector = AKAZE::create();
-            break;
+static void download(const cuda::GpuMat& d_mat, vector< Point2f>& vec)
+{
+    vec.resize(d_mat.cols);
+    Mat mat(1, d_mat.cols, CV_32FC2, (void*)&vec[0]);
+    d_mat.download(mat);
+}
+
+static void drawArrows(Mat& frame, const vector< Point2f>& prevPts, const vector< Point2f>& nextPts, const vector< uchar>& status, Scalar line_color)
+{
+    for (size_t i = 0; i <  prevPts.size(); ++i){
+        if (status[i]){
+            int line_thickness = 1;
+
+            double length = clacLength(prevPts[i], nextPts[i]);
+            if(length < 3) continue;
+
+            Point p = prevPts[i];
+            Point q = nextPts[i];
+
+            double angle = atan2((double)p.y - q.y, (double)p.x - q.x);
+            double hypotenuse = sqrt((double)(p.y - q.y)*(p.y - q.y) + (double)(p.x - q.x)*(p.x - q.x));
+
+            if (hypotenuse <  1.0)
+                continue;
+
+            // Here we lengthen the arrow by a factor of three.
+            q.x = (int)(p.x - 3 * hypotenuse * cos(angle));
+            q.y = (int)(p.y - 3 * hypotenuse * sin(angle));
+
+            // Now we draw the main line of the arrow.
+            line(frame, p, q, line_color, line_thickness);
+
+            // Now draw the tips of the arrow. I do some scaling so that the
+            // tips look proportional to the main line of the arrow.
+            p.x = (int)(q.x + 9 * cos(angle + CV_PI / 4));
+            p.y = (int)(q.y + 9 * sin(angle + CV_PI / 4));
+            line(frame, p, q, line_color, line_thickness);
+
+            p.x = (int)(q.x + 9 * cos(angle - CV_PI / 4));
+            p.y = (int)(q.y + 9 * sin(angle - CV_PI / 4));
+            line(frame, p, q, line_color, line_thickness);
+        }
+    }
+}
+
+
+int trackingGpu(void)
+{
+
+    int camNum = 4;
+    VideoCapture vcap[4];
+    string camAddress[4];
+    string window_name[4];
+    Mat knnImg;
+    vector<Mat> frame(4);
+    vector<Mat> srcImg(4);
+    Mat panoImg;
+    cuda::GpuMat prevGpuImg;
+    cuda::GpuMat currGpuImg;
+    Panorama pano;//    pano.setGpu(true);
+    Ptr<cuda::BackgroundSubtractorFGD> pBGS = cuda::createBackgroundSubtractorFGD();
+//    cuda::createBackgroundSubtractorGMG()
+
+    cuda::GpuMat d_prevPts;
+    cuda::GpuMat d_nextPts;
+    cuda::GpuMat d_status;
+    Ptr< cuda::CornersDetector> detector = cuda::createGoodFeaturesToTrackDetector(CV_8U, 4000, 0.01, 0);
+    Ptr< cuda::SparsePyrLKOpticalFlow> d_pyrLK = cuda::SparsePyrLKOpticalFlow::create(Size(21, 21), 3, 30);
+
+    TickMeter meter;
+    Rect2d dtcRect;
+
+    if(g_isBebug){
+        for(int i=0; i<camNum; i++){
+            camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
+        }
+    }else{
+        camAddress[0] = "rtsp://192.168.5.103:554/s1";
+        camAddress[1] = "rtsp://192.168.5.7:554/s1";
+        camAddress[2] = "rtsp://192.168.5.118:554/s1";
+        camAddress[3] = "rtsp://192.168.5.8:554/s1";
     }
 
 
-    //Detect and compute
-    vector<cv::KeyPoint> keys1, keys2;
-    Mat desc1, desc2;
-    detector->detectAndCompute(image1, noArray(), keys1, desc1);
-    detector->detectAndCompute(image2, noArray(), keys2, desc2);
-
-    auto matchtype = detector->defaultNorm(); // SIFT, SURF: NORM_L2
-                                                // BRISK, ORB, KAZE, A-KAZE: NORM_HAMMING
-    BFMatcher matcher(matchtype);
-    vector<vector<DMatch >> knn_matches;
-
-    // 上位2点
-    matcher.knnMatch(desc1, desc2, knn_matches, 2);
-
-
-    // 対応点を絞る
-//    const auto match_par = .6f; //対応点のしきい値
-    const auto match_par = .6f; //対応点のしきい値
-    std::vector<cv::DMatch> good_matches;
-
-    std::vector<cv::Point2f> match_point1;
-    std::vector<cv::Point2f> match_point2;
-
-    for (size_t i = 0; i < knn_matches.size(); ++i) {
-        auto dist1 = knn_matches[i][0].distance;
-        auto dist2 = knn_matches[i][1].distance;
-
-        //良い点を残す（最も類似する点と次に類似する点の類似度から）
-        if (dist1 <= dist2 * match_par) {
-            good_matches.push_back(knn_matches[i][0]);
-            match_point1.push_back(keys1[knn_matches[i][0].queryIdx].pt);
-            match_point2.push_back(keys2[knn_matches[i][0].trainIdx].pt);
+    //camera check
+    for(int i=0; i<camNum; i++){
+        if (!vcap[i].open(camAddress[i])) {
+            cout << "error opening camera stream ...." << i << endl;
+            return -1;
         }
+        window_name[i] = strsprintf("camNo%d", i+1);
     }
-    if(match_point1.size() >= 4){
-//        homography = findHomography( match_point1, match_point2, CV_RANSAC );
-        Mat masks;
-        homography = findHomography( match_point1, match_point2, masks, RANSAC, 3.f);
 
-        //RANSACで使われた対応点のみ抽出
-        vector<DMatch> inlierMatches;
-        for (auto i = 0; i < masks.rows; ++i) {
-            uchar *inlier = masks.ptr<uchar>(i);
-            if (inlier[0] == 1) {
-                inlierMatches.push_back(good_matches[i]);
-            }
-        }
-        //特徴点の表示
-        Mat dst1, dst2;
-        drawMatches(image1, keys1, image2, keys2, good_matches, dst1);
-        drawMatches(image1, keys1, image2, keys2, inlierMatches, dst2);
-        imshow( "matches1", dst1 );
-        imshow( "matches2", dst2 );
-
-        while(1){
-            if(waitKey(10) == 27){
+    bool is_first = true;
+    bool isCapError = false;
+    while (1) {
+        for(int i=0; i<camNum; i++){
+            if(!vcap[i].read(frame[i])){
+                cout << "capture error" << endl;
+                isCapError = true;
                 break;
             }
+            resize(frame[i], srcImg[i], Size(), 0.5, 0.5);
+            cvtColor(srcImg[i], srcImg[i], COLOR_BGR2GRAY);
+//                imshow(window_name[i], frame[i]);
         }
-        destroyAllWindows();
-        return true;
-    }
-
-    // 特徴点の対応付け
-//    vector< DMatch > matches;
-//    FlannBasedMatcher matcher;
-//    matcher.match( desp1, desp2, matches );
-
-//    double max_dist = 0; double min_dist = 100;
-//    for( int i = 0; i < desp1.rows; i++ ){
-//        double dist = matches[i].distance;
-//        if( dist < min_dist ) min_dist = dist;
-//        if( dist > max_dist ) max_dist = dist;
-//    }
-
-//    std::vector< DMatch > good_matches;
-
-//    for( int i = 0; i < desp1.rows; i++ ){
-//    if( matches[i].distance < 4*min_dist ){
-//        good_matches.push_back( matches[i]); }
-//    }
-
-//    vector<Point2f> obj;
-//    vector<Point2f> scene;
-//    for( int i = 0; i < good_matches.size(); i++ ){
-//        obj.push_back( keys1[ good_matches[i].queryIdx ].pt );
-//        scene.push_back( keys2[ good_matches[i].trainIdx ].pt );
-//    }
-
-//    if(obj.size() >= 4){
-//        homography = findHomography( obj, scene, CV_RANSAC );
-//        return true;
-//    }
-
-    return false;
-}
+        if(isCapError) break;
 
 
-int stich3(Mat (&srcImg)[3]){
-    // Gray_scale
-    Mat grayImg[3];
-    for(int i=0; i<3; i++){
-        cvtColor(srcImg[i], grayImg[i], COLOR_BGR2GRAY);
-    }
 
-//    //1と2
-//    Mat H12;
-//    if(!hFromRansac( grayImg[0], grayImg[1], H12)){
-//        cout << "homograpy error H12" << endl;
-//        return -1;
-//    }
-//    Mat result1;
-//    Size newSize = getDistSize(H12, grayImg[1]);
-//    warpPerspective( grayImg[0], result1, H12, newSize);
-//    Mat result2 = result1;
+        if(is_first){
+            pano.estimateAndCompose(srcImg, panoImg);
+            is_first = false;
+            prevGpuImg.upload(panoImg);
+        }else{
+            meter.reset();
+            meter.start();
+
+            pano.composePanorama(srcImg, panoImg);
+            currGpuImg.upload(panoImg);
+            //feature
+            detector->detect(prevGpuImg, d_prevPts);
+            d_pyrLK->calc(prevGpuImg, currGpuImg, d_prevPts, d_nextPts, d_status);
+            //copy to prev
+            currGpuImg.copyTo(prevGpuImg);
+
+            // Draw arrows
+            vector< Point2f> prevPts(d_prevPts.cols);
+            download(d_prevPts, prevPts);
+
+            vector< Point2f> nextPts(d_nextPts.cols);
+            download(d_nextPts, nextPts);
+
+            vector< uchar> status(d_status.cols);
+            download(d_status, status);
+
+            //draw arrows
+            drawArrows(panoImg, prevPts, nextPts, status, Scalar(155, 155, 155));
+
+            meter.stop();
+            std::cout << meter.getTimeMilli() << "ms" << std::endl;
+        }
 
 
-    //1と2
-    Mat H12;
-    if(!hFromRansac( grayImg[2], grayImg[1], H12)){
-        cout << "homograpy error H12" << endl;
-        return -1;
-    }
 
-    Mat result1;
-    Size size1 = getDistSize(H12, grayImg[1]);
-    size1.width = size1.width*0.99;
-    warpPerspective( grayImg[2], result1, H12, size1);
-    for( int y = 0 ; y < grayImg[1].rows ; ++y ){
-        for( int x = 0 ; x < grayImg[1].cols ; ++x ){
-            result1.at<uchar>( y, x ) = grayImg[1].at<uchar>( y, x );
+        imshow("panorama image", panoImg);
+
+        if(waitKey(10) == 27){
+            break;
         }
     }
 
-
-    //画像を左右反転する
-    flip( grayImg[0], grayImg[0], 1 );
-    flip( grayImg[1], grayImg[1], 1 );
-
-    //0と1
-    Mat H01;
-    if (!hFromRansac( grayImg[0], grayImg[1], H01 )){
-        cout << "homograpy error H01" << endl;
-        return -1;
-    }
-    Mat result2;
-    Size size2 = getDistSize(H01, grayImg[1]);
-    size2.width = size2.width*0.99;
-    warpPerspective( grayImg[0], result2, H01, size2 );
-    flip(result2, result2, 1);
-    size2.width  = size2.width - grayImg[1].cols;
-
-    // calc Dist size
-    Size dstSize;
-    dstSize.height = size1.height;
-    dstSize.width = size1.width + size2.width;
-    Mat dstImg = Mat::zeros(dstSize, CV_8U);
-
-    //Copy
-    for( int y = 0 ; y < result2.rows ; y++ ){
-        for( int x = 0 ; x < size2.width; x++ ){
-            dstImg.at<uchar>( y, x ) = result2.at<uchar>( y, x );
-        }
-    }
-    for( int y = 0 ; y < result1.rows ; y++ ){
-        for( int x = 0 ; x < result1.cols; x++ ){
-            dstImg.at<uchar>( y, x+size2.width ) = result1.at<uchar>( y, x );
-        }
-    }
-
-    //画像を表示する
-    imshow( "Mosaicing", dstImg );
-//    imshow( "result1", result1 );
-//    imshow( "result2", result2 );
-    waitKey();
-    imwrite("./Result/Mosaicing.jpg", dstImg);
-
+    destroyAllWindows();
 
     return 0;
 }
 
-Size getDistSize(Mat &H, Mat &srcImg)
-{
-    vector<cv::Point2f> obj_corner;
-    obj_corner.push_back(cv::Point2f(0, 0));
-    obj_corner.push_back(cv::Point2f(srcImg.cols, 0));
-    obj_corner.push_back(cv::Point2f(srcImg.cols, srcImg.rows));
-    obj_corner.push_back(cv::Point2f(0, srcImg.rows));
 
-    std::vector<Point2f> scene_corners(4);
-    perspectiveTransform(obj_corner,scene_corners,H);
-    int maxCols(0),maxRows(0);
-
-    for(int i=0;i<scene_corners.size();i++){
-      if(maxRows < scene_corners.at(i).y)
-           maxRows = scene_corners.at(i).y;
-      if(maxCols < scene_corners.at(i).x)
-           maxCols = scene_corners.at(i).x;
-    }
-    maxRows = srcImg.rows;
-//    if(maxRows > srcImg.rows*2){
-//        maxRows = srcImg.rows*1.5;
-//    }
-
-    if(maxCols > srcImg.cols*2){
-        maxCols = srcImg.cols*2;
-    }
-    if(maxCols < srcImg.cols){
-        maxCols = srcImg.cols*2;
-    }
-    return Size(maxCols, maxRows);
-}
-
-int stich5(){
-    // 画像読み込み（グレースケールで読み込み）
-    Mat image1 = imread( "./images/S6.jpg",  CV_LOAD_IMAGE_GRAYSCALE );
-    Mat image2 = imread( "./images/S5.jpg",  CV_LOAD_IMAGE_GRAYSCALE );
-    Mat image3 = imread( "./images/S3.jpg",  CV_LOAD_IMAGE_GRAYSCALE );
-    Mat image4 = imread( "./images/S2.jpg",  CV_LOAD_IMAGE_GRAYSCALE );
-    Mat image5 = imread( "./images/S1.jpg",  CV_LOAD_IMAGE_GRAYSCALE );
-
-    double stichR = 1.5;
-
-    //２と３
-    Mat H23;
-    hFromRansac( image2, image3, H23);
-    Mat result1;
-    Size newSize = getDistSize(H23, image3);
-
-    warpPerspective( image2, result1, H23, Size( image3.cols * stichR , image3.rows ) );
-//    warpPerspective( image2, result1, H23, newSize);
-    for( int y = 0 ; y < image3.rows ; y++ ){
-        for( int x = 0 ; x < image3.cols ; x++ ){
-            result1.at<uchar>( y, x ) = image3.at<uchar>( y, x );
-        }
-      }
-
-    //１と２
-    Mat H12;
-    hFromRansac( image1, image2, H12);
-    Mat result2;
-    Mat H123 = H12 * H23;
-    newSize = getDistSize(H123, result1);
-    warpPerspective( image1, result2, H12 * H23, Size( result1.cols * 1.5 , result1.rows ) );
-//    warpPerspective( image1, result2, H12 * H23, newSize );
-    for( int y = 0 ; y < result1.rows ; ++y ){
-        for( int x = 0 ; x < result1.cols ; ++x ){
-            result2.at<uchar>( y, x ) = result1.at<uchar>( y, x );
-        }
-    }
-
-    //画像を左右反転する
-    flip( image3, image3, 1 );
-    flip( image4, image4, 1 );
-    flip( result2, result2, 1 );
-
-    //３と４
-    Mat H34;
-    hFromRansac( image4, image3, H34 );
-    Mat result3;
-//    Mat H1234 = H123 * H34;
-//    newSize = getDistSize(H34, result2);
-    warpPerspective( image4, result3, H34, Size( result2.cols * stichR , result2.rows ) );
-//    warpPerspective( image4, result3, H34, newSize );
-
-    //右に移動させる
-    for ( int y = result3.rows -1; y >= 0; y-- ){
-        for ( int x = result3.cols -1; x >= 0; x-- ){
-            int dx = 1.25*image4.cols;
-            if ( result3.cols <= x +dx ){
-                continue;
-            }
-            result3.at<uchar>( y, x + dx ) = result3.at<uchar>( y , x);
-            result3.at<uchar>( y , x) = 0;
-        }
-    }
-
-    for( int y = 0 ; y < result2.rows ; y++ ){
-        for( int x = 0 ; x < result2.cols ; x++ ){
-            result3.at<uchar>( y, x ) = result2.at<uchar>( y, x );
-        }
-    }
-
-    //画像を左右反転する
-    flip( image5, image5, 1 );
-    Mat H45;
-    hFromRansac( image5, image4, H45 );
-
-    //４と５
-    Mat result4;
-//    Mat H12345 = H1234 * H45;
-//    newSize = getDistSize(H45, result3);
-    warpPerspective( image5, result4, H34*H45, Size( result3.cols * stichR , result3.rows ) );
-//    warpPerspective( image5, result4, H34*H45, newSize );
-
-    //右に移動させる
-    for ( int y = result4.rows -1; y > 0; y-- ){
-        for ( int x = result4.cols -1; x > 0; x-- ){
-            int dx = (1+0.5*0.5)*image5.cols;
-            if ( result4.cols <= x +dx ){
-                continue;
-            }
-            result4.at<uchar>( y, x + dx ) = result4.at<uchar>( y , x);
-            result4.at<uchar>( y , x) = 0;
-        }
-    }
-
-    for( int y = 0 ; y < result3.rows ; y++ ){
-        for( int x = 0 ; x < result3.cols ; x++ ){
-            if ( (int)result3.at<uchar>( y, x ) != 0 ){
-                result4.at<uchar>( y, x ) = result3.at<uchar>( y, x );
-            }
-        }
-      }
-
-    //画像を反転して元に戻す
-    flip( result4, result4, 1 );
-
-    //画像を表示する
-    imshow( "Mosaicing", result4 );
-    waitKey();
-
-    //画像を保存する
-    imwrite( "pano1.jpg", result1 );
-    imwrite( "pano2.jpg", result2 );
-    imwrite( "pano3.jpg", result3 );
-    imwrite( "pano4.jpg", result4 );
-
-    return 0;
-}
 
 
 int cudaTest()
@@ -878,8 +693,9 @@ int main(int argc, char *argv[])
 {
 //    cudaTest();
     g_isBebug = true;
+    trackingGpu();
 //    pano_test();
-    pano_test2();
+//    pano_test2();
 //    stich5();
 //    trackVehicle();
 //    optFlowTracking();

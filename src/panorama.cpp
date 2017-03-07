@@ -168,7 +168,7 @@ int Panorama::estimateAndCompose(std::vector<cv::Mat> &imgs, cv::Mat &result)
         }
         //Set Homography and dstSize
         cv::Size size = getDistSize(H_right, rightStitch[i]);
-        size.width = size.width*0.99;
+//        size.width = size.width*0.99;
         m_rightSize[i] = size;
         H_right.copyTo(m_rightHomo[i]); //have to use copyTo
 
@@ -210,7 +210,7 @@ int Panorama::estimateAndCompose(std::vector<cv::Mat> &imgs, cv::Mat &result)
         }
 
         cv::Size size = getDistSize(H_left, leftStitch[i]);
-        size.width = size.width*0.99;
+//        size.width = size.width*0.99;
         m_leftSize[i] = size;
         H_left.copyTo(m_leftHomo[i]); //have to use copyTo
 
