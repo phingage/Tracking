@@ -70,14 +70,14 @@ bool Panorama::hFromRansac( cv::Mat &image1, cv::Mat &image2, cv::Mat &homograph
         cv::Mat masks;
         homography = cv::findHomography( match_point1, match_point2, masks, cv::RANSAC, 3.f);
 
-        //RANSACで使われた対応点のみ抽出
-        std::vector<cv::DMatch> inlierMatches;
-        for (auto i = 0; i < masks.rows; ++i) {
-            uchar *inlier = masks.ptr<uchar>(i);
-            if (inlier[0] == 1) {
-                inlierMatches.push_back(good_matches[i]);
-            }
-        }
+//        //RANSACで使われた対応点のみ抽出
+//        std::vector<cv::DMatch> inlierMatches;
+//        for (auto i = 0; i < masks.rows; ++i) {
+//            uchar *inlier = masks.ptr<uchar>(i);
+//            if (inlier[0] == 1) {
+//                inlierMatches.push_back(good_matches[i]);
+//            }
+//        }
 //        //特徴点の表示
 //        cv::Mat dst1, dst2;
 //        cv::drawMatches(image1, keys1, image2, keys2, good_matches, dst1);
@@ -110,10 +110,10 @@ cv::Size Panorama::getDistSize(cv::Mat &H, cv::Mat &srcImg)
     int maxCols(0),maxRows(0);
 
     for(size_t i=0;i<scene_corners.size();i++){
-      if(maxRows < scene_corners.at(i).y)
-           maxRows = scene_corners.at(i).y;
-      if(maxCols < scene_corners.at(i).x)
-           maxCols = scene_corners.at(i).x;
+      if(maxRows < scene_corners[i].y)
+           maxRows = scene_corners[i].y;
+      if(maxCols < scene_corners[i].x)
+           maxCols = scene_corners[i].x;
     }
     maxRows = srcImg.rows;
 //    if(maxRows > srcImg.rows*2){
