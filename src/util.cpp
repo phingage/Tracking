@@ -7,7 +7,7 @@
 #include <dirent.h>
 #include <string.h>
 #include <sys/stat.h>
-#include "../include/util.h"
+#include "util.h"
 
 // Functions
 

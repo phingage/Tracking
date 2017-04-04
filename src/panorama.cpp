@@ -1,4 +1,4 @@
-#include "../include/panorama.h"
+#include "panorama.h"
 
 Panorama::Panorama()
 {
