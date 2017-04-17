@@ -70,27 +70,27 @@ bool Panorama::hFromRansac( cv::Mat &image1, cv::Mat &image2, cv::Mat &homograph
         cv::Mat masks;
         homography = cv::findHomography( match_point1, match_point2, masks, cv::RANSAC, 3.f);
 
-//        //RANSACで使われた対応点のみ抽出
-//        std::vector<cv::DMatch> inlierMatches;
-//        for (auto i = 0; i < masks.rows; ++i) {
-//            uchar *inlier = masks.ptr<uchar>(i);
-//            if (inlier[0] == 1) {
-//                inlierMatches.push_back(good_matches[i]);
-//            }
-//        }
-//        //特徴点の表示
-//        cv::Mat dst1, dst2;
-//        cv::drawMatches(image1, keys1, image2, keys2, good_matches, dst1);
-//        cv::drawMatches(image1, keys1, image2, keys2, inlierMatches, dst2);
-//        cv::imshow( "matches1", dst1 );
-//        cv::imshow( "matches2", dst2 );
+        //RANSACで使われた対応点のみ抽出
+        std::vector<cv::DMatch> inlierMatches;
+        for (auto i = 0; i < masks.rows; ++i) {
+            uchar *inlier = masks.ptr<uchar>(i);
+            if (inlier[0] == 1) {
+                inlierMatches.push_back(good_matches[i]);
+            }
+        }
+        //特徴点の表示
+        cv::Mat dst1, dst2;
+        cv::drawMatches(image1, keys1, image2, keys2, good_matches, dst1);
+        cv::drawMatches(image1, keys1, image2, keys2, inlierMatches, dst2);
+        cv::imshow( "matches1", dst1 );
+        cv::imshow( "matches2", dst2 );
 
-//        while(1){
-//            if(cv::waitKey(10) == 27){
-//                break;
-//            }
-//        }
-//        cv::destroyAllWindows();
+        while(1){
+            if(cv::waitKey(10) == 27){
+                break;
+            }
+        }
+        cv::destroyAllWindows();
         return true;
     }
 

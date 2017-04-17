@@ -48,6 +48,7 @@ bool g_isBebug = false;
 vector<Rect> g_detectedArea;
 Rect g_box;
 vector<Rect> g_Boxes;
+vector<Point> g_Points;
 bool drawing_box = false;
 bool set_box =false;
 
@@ -68,7 +69,7 @@ int trackVehicle();
 
 
 // コールバック関数
-void my_mouse_callback(int event, int x, int y, int flags, void* param){
+void rect_mouse_callback(int event, int x, int y, int flags, void* param){
     Mat* image = static_cast<Mat*>(param);
 
     switch (event){
@@ -101,8 +102,6 @@ void my_mouse_callback(int event, int x, int y, int flags, void* param){
     }
 }
 
-
-//
 int setBoundBox(string &name, Mat &srcImg)
 {
 
@@ -112,7 +111,7 @@ int setBoundBox(string &name, Mat &srcImg)
     namedWindow(name, CV_WINDOW_AUTOSIZE);
 
     // コールバックを設定
-    setMouseCallback(name, my_mouse_callback, (void *)&srcImg);
+    setMouseCallback(name, rect_mouse_callback, (void *)&srcImg);
 
 
     // Main loop
@@ -136,6 +135,51 @@ int setBoundBox(string &name, Mat &srcImg)
 
     return 0;
 }
+
+// call back for cureve appro
+void point_mouse_callback(int event, int x, int y, int flags, void* param){
+    Mat* image = static_cast<Mat*>(param);
+
+    switch (event){
+
+    case EVENT_LBUTTONDOWN:
+        Point tp(x,y);
+        circle(*image, tp, 10, Scalar(255,0,0), -1);
+        g_Points.push_back(tp);
+        break;
+
+    }
+}
+
+int setPoints(string &name, Mat &srcImg)
+{
+
+    Mat temp = srcImg.clone();
+
+    // ウィンドウを生成
+    namedWindow(name, CV_WINDOW_AUTOSIZE);
+
+    // コールバックを設定
+    setMouseCallback(name, point_mouse_callback, (void *)&srcImg);
+
+
+    // Main loop
+    while (1){
+        // imageをtempにコピー
+        srcImg.copyTo(temp);
+
+
+        imshow(name, temp);
+
+        // Escで終了
+        if (waitKey(15) == 27)
+            break;
+    }
+    destroyAllWindows();
+
+    return 0;
+}
+
 
 
 bool labelling(Mat &grayImg, Rect2d &dtcRect, int minArea=100)
@@ -285,7 +329,7 @@ static void drawArrows(Mat& srcImg, const vector< Point2f>& prevPts, const vecto
             int line_thickness = 1;
 
             double length = calcLength(prevPts[i], nextPts[i]);
-            if(length < 0.4) continue;
+            if(length < 0.05) continue;
 
             Point p = prevPts[i];
             Point q = nextPts[i];
@@ -317,7 +361,7 @@ static void drawArrows(Mat& srcImg, const vector< Point2f>& prevPts, const vecto
 }
 
 
-void estimateTrackTransform(Mat &srcImg, vector<Rect> &trackBoxes, const vector<Point2f>& prevPts, const vector<Point2f>& nextPts, const vector<uchar>& status)
+void estimateTrackTransform(Mat &srcImg, vector<Rect2d> &trackBoxes, const vector<Point2f>& prevPts, const vector<Point2f>& nextPts, const vector<uchar>& status)
 {
     int width = srcImg.cols;
     int height = srcImg.rows;
@@ -327,34 +371,139 @@ void estimateTrackTransform(Mat &srcImg, vector<Rect> &trackBoxes, const vector<
     for (size_t i = 0; i < boxSize; ++i){
         vector<Point2f> inPrevPos(0);
         vector<Point2f> inNextPos(0);
+        vector<Point2f> subPrevPos(0);
+        vector<Point2f> subNextPos(0);
+
         for (size_t j = 0; j < ptSize; ++j){
             if (status[j] ){
                 double length = calcLength(prevPts[i], nextPts[i]);
-                if(length > 50) continue;
-                if(length < 2) continue;
+                if(length > 10) continue;
+           //     if(length < 0.05) continue;
 
                 if(trackBoxes[i].x < prevPts[j].x && trackBoxes[i].x+trackBoxes[i].width > prevPts[j].x &&
                     trackBoxes[i].y < prevPts[j].y && trackBoxes[i].y+trackBoxes[i].height > prevPts[j].y){
                     inPrevPos.push_back(prevPts[j]);
                     inNextPos.push_back(nextPts[j]);
                 }
+                if(trackBoxes[i].x < prevPts[j].x && trackBoxes[i].x+trackBoxes[i].width > prevPts[j].x &&
+                    trackBoxes[i].y < prevPts[j].y && trackBoxes[i].y+trackBoxes[i].height > prevPts[j].y){
+                    subPrevPos.push_back(prevPts[j]);
+                    subNextPos.push_back(nextPts[j]);
+                }
             }
         }
+
+        int inSize = inNextPos.size();
+        if(inSize >= 2){
+            double prevX=0, prevY=0;
+            double nextX=0, nextY=0;
+            for(int j=0; j<inSize; j++){
+                prevX += inPrevPos[j].x;
+                prevY += inPrevPos[j].y;
+                nextX += inNextPos[j].x;
+                nextY += inNextPos[j].y;
+            }
+            double diffX = nextX/(double)inSize - prevX/(double)inSize;
+            double diffY = nextY/(double)inSize - prevY/(double)inSize;
+            cout << "diffX=" << diffX << ",diffY=" << diffY << endl;
+
+            if(abs(diffX) > 0.05)
+                trackBoxes[i].x += diffX;
+
+//            if(abs(diffY) > 0.05)
+                trackBoxes[i].y += diffY;
+
+        }
+
+
+        if(inSize > 3){
+            RotatedRect prevBox = minAreaRect(Mat(subPrevPos));
+            RotatedRect nextBox = minAreaRect(Mat(subNextPos));
+            Point2f pvtx[4], nvtx[4];
+            prevBox.points(pvtx);
+            nextBox.points(nvtx);
+            for (int j = 0; j < 4; j++){
+                 line(srcImg, pvtx[j], pvtx[(j + 1) % 4], Scalar(255, 255, 0), 1, LINE_AA);
+                 line(srcImg, nvtx[j], nvtx[(j + 1) % 4], Scalar(0, 255, 255), 1, LINE_AA);
+            }
+
+//            //New position
+//            double minX(9999),minY(9999);
+//            double maxX(0),maxY(0);
+//            for(int j=0;j<4;j++){
+//                if(minX > nvtx[j].x)    minX = nvtx[j].x;
+//                if(minY > nvtx[j].y)    minY = nvtx[j].y;
+//                if(maxX < nvtx[j].x)    maxX = nvtx[j].x;
+//                if(maxY < nvtx[j].y)    maxY = nvtx[j].y;
+//            }
+
+//            if(minX < 0) minX = 0;
+//            if(minY < 0) minY = 0;
+//            if(maxX > width) maxX = width;
+//            if(maxY > height) maxY = height;
+
+//            trackBoxes[i].x = minX;
+//            trackBoxes[i].y = minY;
+//            trackBoxes[i].width = maxX - minX;
+//            trackBoxes[i].height = maxY - minY;
+
+
+//            Rect prevRect = boundingRect( Mat(subPrevPos) );
+//            Rect nextRect = boundingRect( Mat(subNextPos) );
+
+//            rectangle(srcImg, prevRect, Scalar(255,255,0));
+//            rectangle(srcImg, nextRect, Scalar(0,255,255));
+
+//            int width, height;
+//            if(nextRect.width > 0){
+//                width = (int)(((double)nextRect.width/(double)prevRect.width) * (double)trackBoxes[i].width);
+//                std::cout << width << ", nextRect.width=" << nextRect.width << ", prevRect.width=" << prevRect.width << std::endl;
+//            }
+
+//            if(nextRect.height > 0){
+//                height = (int)(((double)nextRect.height/(double)prevRect.height) * (double)trackBoxes[i].height);
+//                std::cout << height << ", nextRect.height=" << nextRect.height << ", prevRect.height=" << prevRect.height << std::endl;
+//            }else{
+//                height = trackBoxes[i].height;
+//            }
+
+
+//            Rect boundRect;
+//            boundRect.x = (nextRect.x+nextRect.width/2) - width/2;
+//            boundRect.y = (nextRect.y+nextRect.height/2) - height/2;
+//            boundRect.width = width;
+//            boundRect.height = height;
+
+//            trackBoxes[i] = boundRect;
+        }
+
+/*
         //if inside points over 4 calc transform
         if(inPrevPos.size() >= 4 ){
             Mat masks;
             Mat H = findHomography(inPrevPos, inNextPos, masks, RANSAC);
             vector<Point2f> obj_corners(4);
             obj_corners[0] = cvPoint(trackBoxes[i].x,trackBoxes[i].y);
-            obj_corners[1] = cvPoint(trackBoxes[i].x+trackBoxes[i].width, 0 );
+            obj_corners[1] = cvPoint(trackBoxes[i].x+trackBoxes[i].width, trackBoxes[i].y );
             obj_corners[2] = cvPoint(trackBoxes[i].x+trackBoxes[i].width, trackBoxes[i].y+trackBoxes[i].height );
             obj_corners[3] = cvPoint(trackBoxes[i].x, trackBoxes[i].y+trackBoxes[i].height );
             vector<Point2f> scene_corners(4);
 
             perspectiveTransform( obj_corners, scene_corners, H);
+
+//            Rect boundRect = boundingRect( Mat(scene_corners) );
+//            //New position
+//            if(boundRect.x < 0) boundRect.x = 0;
+//            if(boundRect.y < 0) boundRect.y = 0;
+//            if(boundRect.x+boundRect.width > width) boundRect.width = width - boundRect.x;
+//            if(boundRect.y+boundRect.height > height) boundRect.height = height - boundRect.y;
+
+//            trackBoxes[i] = boundRect;
+
+
+            //New position
             int minX(9999),minY(9999);
             int maxX(0),maxY(0);
-
             for(size_t i=0;i<scene_corners.size();i++){
                 if(minX > scene_corners[i].x)    minX = scene_corners[i].x;
                 if(minY > scene_corners[i].y)    minY = scene_corners[i].y;
@@ -362,18 +511,18 @@ void estimateTrackTransform(Mat &srcImg, vector<Rect> &trackBoxes, const vector<
                 if(maxY < scene_corners[i].y)    maxY = scene_corners[i].y;
             }
 
-            //New position
             if(minX < 0) minX = 0;
             if(minY < 0) minY = 0;
             if(maxX > width) maxX = width;
-            if(maxY < height) maxY = height;
+            if(maxY > height) maxY = height;
 
             trackBoxes[i].x = minX;
             trackBoxes[i].y = minY;
             trackBoxes[i].width = maxX - minX;
             trackBoxes[i].height = maxY - minY;
-        }
 
+        }
+*/
     }
 }
 
@@ -410,14 +559,14 @@ int yoloTest(void)
 int trackingGpu(void)
 {
 
-    int camNum = 4;
-    VideoCapture vcap[4];
-    string camAddress[4];
-    string window_name[4];
+    int camNum = 5;
+    VideoCapture vcap[camNum];
+    string camAddress[camNum];
+    string window_name[camNum];
     Mat knnImg;
     cuda::GpuMat knnGpuImg;
-    vector<Mat> frame(4);
-    vector<Mat> srcImg(4);
+    vector<Mat> frame(camNum);
+    vector<Mat> srcImg(camNum);
     Mat panoImg;
     cuda::GpuMat panoGpuImg;
     cuda::GpuMat prevGpuImg;
@@ -437,15 +586,16 @@ int trackingGpu(void)
     TickMeter meter2;
     vector<Rect> trackingRect(0);
 
-    string namefile = "../Tracking/yolo/coco.names";
-    string cfgfile = "../Tracking/yolo/yolo.cfg";
-    string weightsfile = "../Tracking/yolo/yolo.weights";
-    Yolo2 yolo(namefile, cfgfile ,weightsfile);
+//    string namefile = "../Tracking/yolo/coco.names";
+//    string cfgfile = "../Tracking/yolo/yolo.cfg";
+//    string weightsfile = "../Tracking/yolo/yolo.weights";
+//    Yolo2 yolo(namefile, cfgfile ,weightsfile);
     Rect roiRect;
 
     if(g_isBebug){
         for(int i=0; i<camNum; i++){
-            camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
+//            camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
+            camAddress[i] = strsprintf("./Videos/Fingermark-video/Camera%d.mp4", i+1);
         }
     }else{
         camAddress[0] = "rtsp://192.168.5.103:554/s1";
@@ -473,7 +623,7 @@ int trackingGpu(void)
                 isCapError = true;
                 break;
             }
-            resize(frame[i], srcImg[i], Size(), 0.5, 0.5);
+            resize(frame[i], srcImg[i], Size(), 0.4, 0.4);
 //            cvtColor(srcImg[i], srcImg[i], COLOR_BGR2GRAY);
 //                imshow(window_name[i], frame[i]);
         }
@@ -483,8 +633,8 @@ int trackingGpu(void)
         if(is_first){
             pano.estimateAndCompose(srcImg, panoImg);
             is_first = false;
-            panoGpuImg.upload(panoImg);
-            cuda::cvtColor(panoGpuImg, prevGpuImg, COLOR_RGB2GRAY);
+//            panoGpuImg.upload(panoImg);
+//            cuda::cvtColor(panoGpuImg, prevGpuImg, COLOR_RGB2GRAY);
             roiRect.x = 0;
             roiRect.y = 0;
             roiRect.width = panoImg.rows;
@@ -495,8 +645,8 @@ int trackingGpu(void)
 
             //make pano
             pano.composePanorama(srcImg, panoImg);
-            panoGpuImg.upload(panoImg);
-            cuda::cvtColor(panoGpuImg, currGpuImg, COLOR_RGB2GRAY);
+//            panoGpuImg.upload(panoImg);
+//            cuda::cvtColor(panoGpuImg, currGpuImg, COLOR_RGB2GRAY);
 
 /*            //feature
             detector->detect(prevGpuImg, d_prevPts);
@@ -527,14 +677,14 @@ int trackingGpu(void)
 */
         }
 
-        meter2.reset();
-        meter2.start();
+//        meter2.reset();
+//        meter2.start();
 
-        Mat roiImg = panoImg(roiRect);
-        rectangle(panoImg, roiRect, Scalar(255, 0, 255));
+//        Mat roiImg = panoImg(roiRect);
+//        rectangle(panoImg, roiRect, Scalar(255, 0, 255));
 
-        vector<tagDetected> yoloResult;
-        yolo.detect(roiImg, yoloResult);
+//        vector<tagDetected> yoloResult;
+//        yolo.detect(roiImg, yoloResult);
 /*
         pBGS->apply(panoGpuImg, knnGpuImg);
         if(!is_first){
@@ -548,8 +698,8 @@ int trackingGpu(void)
             }
         }
 */
-        meter2.stop();
-        std::cout << "BackGround:" << meter2.getTimeMilli() << "ms" << std::endl;
+//        meter2.stop();
+//        std::cout << "BackGround:" << meter2.getTimeMilli() << "ms" << std::endl;
 
         imshow("panorama image", panoImg);
 
@@ -619,56 +769,101 @@ int cudaTest()
 }
 
 
-bool findNewVehicle(vector<Rect> &candidates, vector<Rect> &detected, int minWidth, int minHeight)
+bool findNewVehicle(vector<Rect> &detected, vector<tagDetected> &yoloResult, int minWidth, int minHeight)
 {
-
-    bool isDetect = false;
-    int currNum = detected.size();
-    int findNum = candidates.size();
-
-    for (int i = 0; i < findNum; ++i) {
-        int width = candidates[i].width;
-        int height = candidates[i].height;
-
-//        if(x<=padding || x+width >= binImg.cols-padding ){
-//            continue;
-//        }
-
-        if( width > minWidth && height > minHeight ){
-            if(currNum == 0){
-                detected.push_back(candidates[i]);
-                return true;
-            }else{
-                bool isNewBox =false;
-                //search same box
-                for(int j=0; j<currNum; j++){
-                    double length = calcRectDiff(candidates[i], detected[j]);
-                    if(length < 100){
-                        isNewBox = false;
-                        break;
-                    }
-                }
-                //add new bounding box
-                if(isNewBox){
-                    detected.push_back(candidates[i]);
-                    isDetect = true;
-                }
+    // find good one
+    int size = yoloResult.size();
+    int xpos = 0;
+    Rect candidate;
+    for(int i=0; i<size; i++){
+        if(yoloResult[i].label == 2){   // 2 == car (from coco model)
+            yoloResult[i].box.x += g_Boxes[0].x;
+            yoloResult[i].box.y += g_Boxes[0].y;
+            if(xpos < yoloResult[i].box.x){
+                candidate = yoloResult[i].box;
             }
         }
     }
 
-    return isDetect;
+
+//    if(x<=padding || x+width >= binImg.cols-padding )   return false;
+    int currNum = detected.size();
+
+    if( candidate.width > minWidth && candidate.height > minHeight ){
+        // if no detected bounding box, just add candidate as new
+        if(currNum == 0){
+            detected.push_back(candidate);
+            return true;
+        }
+        //check candidate position
+        else{
+            for(int j=0; j<currNum; j++){
+                double length = calcRectDiff(candidate, detected[j]);
+                if(length < 150){
+                    return false;
+                }
+            }
+            //add new bounding box
+            detected.push_back(candidate);
+            return false;
+        }
+    }
+
+    return false;
 }
 
+bool findNewVehicleEx(Rect &findRect, vector<Rect2d> &detected, vector<tagDetected> &yoloResult, int minWidth, int minHeight)
+{
+    // find good one
+    int size = yoloResult.size();
+    int xpos = 0;
+    Rect2d candidate;
+    for(int i=0; i<size; i++){
+        if(yoloResult[i].label == 2){   // 2 == car (from coco model)
+            yoloResult[i].box.x += g_Boxes[0].x;
+            yoloResult[i].box.y += g_Boxes[0].y;
+            if(xpos < yoloResult[i].box.x){
+                candidate = yoloResult[i].box;
+            }
+        }
+    }
 
-int trackVehicle(){
+
+//    if(x<=padding || x+width >= binImg.cols-padding )   return false;
+    int currNum = detected.size();
+
+    if( candidate.width > minWidth && candidate.height > minHeight ){
+        // if no detected bounding box, just add candidate as new
+        if(currNum == 0){
+            findRect = candidate;
+            return true;
+        }
+        //check candidate position
+        else{
+            for(int j=0; j<currNum; j++){
+                double length = calcRectDiff(candidate, detected[j]);
+                if(length < 150){
+                    return false;
+                }
+            }
+            //add new bounding box
+            findRect = candidate;
+            return false;
+        }
+    }
+
+    return false;
+}
+
+int trackVehicle3(){
 
     VideoCapture vcap;
 
     string camAddress;
     if (g_isBebug) {
 //        camAddress = "../Tracking/data/DJI_0204.MOV";
-        camAddress = "../Tracking/data/sample.avi";
+//        camAddress = "../Tracking/data/sample.avi";
+        camAddress = "../Tracking/data/DJI_0204_B_STABLE.mp4";
     }else {
         camAddress = "rtsp://192.168.5.7:554/s1";
     }
@@ -677,19 +872,163 @@ int trackVehicle(){
         return -1;
     }
 
-//    Ptr<BackgroundSubtractorKNN> pKNN = createBackgroundSubtractorKNN();
-//    Ptr<BackgroundSubtractorMOG2> pMOG2 = createBackgroundSubtractorMOG2();
-    Ptr<Tracker> tracker = Tracker::create("MIL");
+    Mat frame;
+    cuda::GpuMat gpuImg, prevGpuImg, nextGpuImg;
+    cuda::GpuMat prevGpuPts;
+    cuda::GpuMat nextGpuPts;
+    cuda::GpuMat ptsGpuStatus;
+    Ptr< cuda::CornersDetector> pDetector = cuda::createGoodFeaturesToTrackDetector(CV_8U, 4000, 0.01, 0);
+    Ptr< cuda::SparsePyrLKOpticalFlow> pPyrLK = cuda::SparsePyrLKOpticalFlow::create(Size(21, 21), 3, 30);
+
+//    string namefile = "../Tracking/yolo/coco.names";
+//    string cfgfile = "../Tracking/yolo/yolo.cfg";
+//    string weightsfile = "../Tracking/yolo/yolo.weights";
+//    Yolo2 yolo(namefile, cfgfile ,weightsfile);
 
 
-//    string cascade_xml = "../Tracking/cascadefile/haarcascade_upperbody.xml";
-//    Ptr<cuda::CascadeClassifier> cascade_gpu = cuda::CascadeClassifier::create(cascade_xml);
+    if(!vcap.read(frame)){
+        cout << "capture error" << endl;
+        return -1;
+    }
+    Mat dstImg = Mat::ones(frame.rows * 0.4, frame.cols * 0.4, CV_8UC3);
+    resize(frame, dstImg, dstImg.size(), INTER_AREA);
+    string setWinName = "Points Setting...";
+    setPoints(setWinName, dstImg);
+    vector<tagDetected> yoloResult;
+    vector<Rect2d> detectedRect;
+    bool isInit = false;
 
-    Mat frame, grayImg;
-    Mat knnImg, mogImg;
-    cuda::GpuMat grayGpuImg;
-    Rect2d BBox;
+//    int fourcc   = VideoWriter::fourcc('X', 'V', 'I', 'D');
+//    double fps   = 30.0;
+//    bool isColor = true;
+//    VideoWriter writer("sample.avi", fourcc, fps, dstImg.size(), isColor);
+
+
+    if( g_Points.size() < 6) return -1;
+/*
+    int widthMax = 0;
     bool isDetected = false;
+    Rect findRect;
+    findRect.x = 0;
+    findRect.y = 0;
+    findRect.width = 0;
+    findRect.height = 0;
+    int serachCount = 0;
+
+    while (1) {
+
+        if(!vcap.read(frame)){
+            cout << "capture error" << endl;
+            break;
+        }
+        resize(frame, dstImg, dstImg.size(), INTER_AREA);
+
+        rectangle(dstImg, g_Boxes[0], Scalar(100,100,100), 1, 1);
+
+        if(isInit){
+            gpuImg.upload(dstImg);
+            cuda::cvtColor(gpuImg, nextGpuImg, COLOR_RGB2GRAY);
+
+//            int detectedSize = detectedRect.size();
+//            for(int i=0; i<detectedSize; i++){
+//                cuda::GpuMat prevRoi = prevGpuImg(detectedRect[i]);
+//                cuda::GpuMat nextRoi = nextGpuImg(detectedRect[i]);
+//            }
+
+            //feature
+            pDetector->detect(prevGpuImg, prevGpuPts);
+            pPyrLK->calc(prevGpuImg, nextGpuImg, prevGpuPts, nextGpuPts, ptsGpuStatus);
+            //copy to prev
+            nextGpuImg.copyTo(prevGpuImg);
+
+            // Draw arrows
+            vector< Point2f> prevPts(prevGpuPts.cols);
+            download(prevGpuPts, prevPts);
+            vector< Point2f> nextPts(nextGpuPts.cols);
+            download(nextGpuPts, nextPts);
+            vector< uchar> status(ptsGpuStatus.cols);
+            download(ptsGpuStatus, status);
+
+            drawArrows(dstImg, prevPts, nextPts, status, Scalar(155, 0, 0));
+
+            estimateTrackTransform(dstImg, detectedRect, prevPts, nextPts, status);
+            int boxSize = detectedRect.size();
+            for(int i=0; i<boxSize; i++){
+                rectangle(dstImg, detectedRect[i], Scalar(255, 0, 255));
+            }
+        }
+
+
+        // yolo
+        yoloResult.clear();
+        Mat roiImg = dstImg(g_Boxes[0]);
+        yolo.detect(roiImg, yoloResult);
+//        findNewVehicle(detectedRect, yoloResult, 300, 100);
+
+        //Find most longest vehicle from candidates
+        if(findNewVehicleEx(findRect,detectedRect, yoloResult, 300, 100)){
+            if(widthMax < findRect.width ){
+                widthMax = findRect.width;
+                isDetected = true;
+                serachCount = 0;
+            }else{
+                if(isDetected){
+                    serachCount++;
+                    if(serachCount > 1){
+                        detectedRect.push_back(findRect);
+                        isDetected = false;
+                    }
+                }
+            }
+        }
+
+
+        if(detectedRect.size() > 0 && !isInit){
+            gpuImg.upload(dstImg);
+            cuda::cvtColor(gpuImg, prevGpuImg, COLOR_RGB2GRAY);
+            isInit = true;
+        }
+
+
+//        writer << dstImg;
+        imshow("Tracking", dstImg);
+
+
+        //get the input from the keyboard
+        if(waitKey(10) == 27){
+            break;
+        }
+    }
+    vcap.release();
+    destroyAllWindows();
+*/
+    return 0;
+}
+
+int trackVehicle(){
+
+    VideoCapture vcap;
+
+    string camAddress;
+    if (g_isBebug) {
+//        camAddress = "../Tracking/data/DJI_0204.MOV";
+//        camAddress = "../Tracking/data/sample.avi";
+        camAddress = "../Tracking/data/DJI_0204_B_STABLE.mp4";
+    }else {
+        camAddress = "rtsp://192.168.5.7:554/s1";
+    }
+    if (!vcap.open(camAddress)) {
+        cout << "error opening camera stream ...." << endl;
+        return -1;
+    }
+
+    Mat frame;
+    cuda::GpuMat gpuImg, prevGpuImg, nextGpuImg;
+    cuda::GpuMat prevGpuPts;
+    cuda::GpuMat nextGpuPts;
+    cuda::GpuMat ptsGpuStatus;
+    Ptr< cuda::CornersDetector> pDetector = cuda::createGoodFeaturesToTrackDetector(CV_8U, 4000, 0.01, 0);
+    Ptr< cuda::SparsePyrLKOpticalFlow> pPyrLK = cuda::SparsePyrLKOpticalFlow::create(Size(21, 21), 3, 30);
 
     string namefile = "../Tracking/yolo/coco.names";
     string cfgfile = "../Tracking/yolo/yolo.cfg";
@@ -701,13 +1040,12 @@ int trackVehicle(){
         cout << "capture error" << endl;
         return -1;
     }
-    Mat dstImg = Mat::ones(frame.rows * 0.8, frame.cols * 0.8, CV_8UC3);
+    Mat dstImg = Mat::ones(frame.rows * 0.4, frame.cols * 0.4, CV_8UC3);
     resize(frame, dstImg, dstImg.size(), INTER_AREA);
-    string name = "Area Setting...";
-    setBoundBox(name, dstImg);
+    string setWinName = "Area Setting...";
+    setBoundBox(setWinName, dstImg);
     vector<tagDetected> yoloResult;
-    vector<Rect> candidateBox;
-    vector<Rect> detectedRect;
+    vector<Rect2d> detectedRect;
     bool isInit = false;
 
 //    int fourcc   = VideoWriter::fourcc('X', 'V', 'I', 'D');
@@ -718,89 +1056,92 @@ int trackVehicle(){
 
     if( g_Boxes.size() < 1) return -1;
 
+    int widthMax = 0;
+    bool isDetected = false;
+    Rect findRect;
+    findRect.x = 0;
+    findRect.y = 0;
+    findRect.width = 0;
+    findRect.height = 0;
+    int serachCount = 0;
 
     while (1) {
+
         if(!vcap.read(frame)){
             cout << "capture error" << endl;
             break;
         }
-//        resize(frame, dstImg, Size(), 0.2, 0.2);
-
         resize(frame, dstImg, dstImg.size(), INTER_AREA);
-//        cvtColor(dstImg, grayImg, COLOR_BGR2GRAY);
 
-//        grayGpuImg.upload(grayImg);
-//        cuda::GpuMat objbuf;
-//        cascade_gpu->detectMultiScale(grayGpuImg, objbuf);
-//        vector<Rect> upperBody;
-//        cascade_gpu->convert(objbuf, upperBody);
-//        int size = upperBody.size();
-//        for(int i = 0; i < size; ++i)
-//            rectangle(dstImg, upperBody[i], Scalar(255,0,0));
-
-//        tracker->update(dstImg, BBox);
-//        rectangle(dstImg, BBox, Scalar(200,0,200), 2);
-
+        rectangle(dstImg, g_Boxes[0], Scalar(100,100,100), 1, 1);
 
         if(isInit){
-            if(tracker->update(dstImg, BBox)){
-                rectangle(dstImg, BBox, Scalar(200,0,200), 2);
+            gpuImg.upload(dstImg);
+            cuda::cvtColor(gpuImg, nextGpuImg, COLOR_RGB2GRAY);
+
+//            int detectedSize = detectedRect.size();
+//            for(int i=0; i<detectedSize; i++){
+//                cuda::GpuMat prevRoi = prevGpuImg(detectedRect[i]);
+//                cuda::GpuMat nextRoi = nextGpuImg(detectedRect[i]);
+//            }
+
+            //feature
+            pDetector->detect(prevGpuImg, prevGpuPts);
+            pPyrLK->calc(prevGpuImg, nextGpuImg, prevGpuPts, nextGpuPts, ptsGpuStatus);
+            //copy to prev
+            nextGpuImg.copyTo(prevGpuImg);
+
+            // Draw arrows
+            vector< Point2f> prevPts(prevGpuPts.cols);
+            download(prevGpuPts, prevPts);
+            vector< Point2f> nextPts(nextGpuPts.cols);
+            download(nextGpuPts, nextPts);
+            vector< uchar> status(ptsGpuStatus.cols);
+            download(ptsGpuStatus, status);
+
+            drawArrows(dstImg, prevPts, nextPts, status, Scalar(155, 0, 0));
+
+            estimateTrackTransform(dstImg, detectedRect, prevPts, nextPts, status);
+            int boxSize = detectedRect.size();
+            for(int i=0; i<boxSize; i++){
+                rectangle(dstImg, detectedRect[i], Scalar(255, 0, 255));
             }
         }
 
 
+        // yolo
         yoloResult.clear();
-        candidateBox.clear();
         Mat roiImg = dstImg(g_Boxes[0]);
         yolo.detect(roiImg, yoloResult);
-//        yolo.detect(dstImg, yoloResult);
-        int size = yoloResult.size();
-        for(int i=0; i<size; i++){
-            if(yoloResult[i].label == 2){
-                //Roi
-                yoloResult[i].box.x += g_Boxes[0].x;
-                yoloResult[i].box.y += g_Boxes[0].y;
-                candidateBox.push_back(yoloResult[i].box);
-                if(findNewVehicle(candidateBox, detectedRect, 180, 100)){
-                    if(!isInit){
-                        BBox = detectedRect[0];
-                        tracker->init(dstImg, BBox);
-                        isInit = true;
+//        findNewVehicle(detectedRect, yoloResult, 300, 100);
+
+        //Find most longest vehicle from candidates
+        if(findNewVehicleEx(findRect,detectedRect, yoloResult, 300, 100)){
+            if(widthMax < findRect.width ){
+                widthMax = findRect.width;
+                isDetected = true;
+                serachCount = 0;
+            }else{
+                if(isDetected){
+                    serachCount++;
+                    if(serachCount > 1){
+                        detectedRect.push_back(findRect);
+                        isDetected = false;
                     }
                 }
-
-//                //Mask
-//                int cx = yoloResult[i].box.x + yoloResult[i].box.width/2;
-//                int cy = yoloResult[i].box.y + yoloResult[i].box.height/2;
-//                if( !(g_Boxes[0].x < cx && g_Boxes[0].x+g_Boxes[0].width > cx
-//                        && g_Boxes[0].y < cy && g_Boxes[0].y+g_Boxes[0].height > cy)){
-//                    rectangle(dstImg, yoloResult[i].box, Scalar(200,0,200), 2, 1);
-//                }
             }
         }
 
-        //motion detection
-//        pKNN->apply(grayImg, knnImg);
-//        pMOG2->apply(grayImg, mogImg);
-//        dilate(knnImg, knnImg, Mat());
-//        dilate(mogImg, mogImg, Mat());
 
-        //detect white area
-//        if(!isDetected){
-//            if(labelling(knnImg, BBox, 800)){
-//                tracker->init(dstImg, BBox);
-//                isDetected = true;
-//            }
-//        }else{
-//            tracker->update(dstImg, BBox);
-//            rectangle(dstImg, BBox, Scalar(200,0,200), 2);
-//        }
+        if(detectedRect.size() > 0 && !isInit){
+            gpuImg.upload(dstImg);
+            cuda::cvtColor(gpuImg, prevGpuImg, COLOR_RGB2GRAY);
+            isInit = true;
+        }
 
 
 //        writer << dstImg;
         imshow("Tracking", dstImg);
-//        imshow("KNN", knnImg);
-//        imshow("MOG2", mogImg);
 
 
         //get the input from the keyboard
@@ -814,13 +1155,17 @@ int trackVehicle(){
 }
 
 
-int newTrackVehicle(){
+int trackVehicle2(){
 
     //Video Caputure
     VideoCapture vcap;
     string camAddress;
     if (g_isBebug) {
-        camAddress = "../Tracking/data/sample.avi";
+//        camAddress = "../Tracking/data/sample.avi";
+//        camAddress = "../Tracking/data/DJI_0001.MOV";
+//        camAddress = "../Tracking/data/0001.avi";
+//        camAddress = "../Tracking/data/0207.avi";
+        camAddress = "../Tracking/data/0204.avi";
     }else {
         camAddress = "rtsp://192.168.5.7:554/s1";
     }
@@ -834,7 +1179,10 @@ int newTrackVehicle(){
         cout << "capture error" << endl;
         return -1;
     }
-    Mat dstImg = Mat::ones(frame.rows * 0.8, frame.cols * 0.8, CV_8UC3);
+    double scale = 1.0;
+    Mat dstImg = Mat::ones(frame.rows * scale, frame.cols * scale, CV_8UC3);
+//    Mat rotateImg = Mat::ones(frame.rows * scale, frame.cols * scale, CV_8UC3);
+//    Mat dstImg = Mat::ones(frame.cols * scale, frame.rows * scale, CV_8UC3);
     resize(frame, dstImg, dstImg.size(), INTER_AREA);
 
     //Yolo
@@ -852,7 +1200,7 @@ int newTrackVehicle(){
 
     //video save
     int fourcc   = VideoWriter::fourcc('X', 'V', 'I', 'D');
-    double fps   = 20.0;
+    double fps   = 30.0;
     bool isColor = true;
     VideoWriter writer("sample.avi", fourcc, fps, dstImg.size(), isColor);
 
@@ -867,14 +1215,15 @@ int newTrackVehicle(){
             cout << "capture error" << endl;
             break;
         }
-
         resize(frame, dstImg, dstImg.size(), INTER_AREA);
+//        resize(frame, rotateImg, rotateImg.size(), INTER_AREA);
+//        flip(rotateImg.t(), dstImg, 1);
 
         //Draw line
         rectangle(dstImg, g_Boxes[1], Scalar(0,200,0), -1, 1);
-        putText(dstImg, "Entry", Point(g_Boxes[1].x, g_Boxes[1].y-10), FONT_HERSHEY_TRIPLEX, 0.6, Scalar(0,200,0), 1, CV_AA);
+        putText(dstImg, "Entry", Point(g_Boxes[1].x-20, g_Boxes[1].y-10), FONT_HERSHEY_TRIPLEX, 0.6, Scalar(0,200,0), 1, CV_AA);
         rectangle(dstImg, g_Boxes[2], Scalar(0,0,200), -1, 1);
-        putText(dstImg, "Exit", Point(g_Boxes[2].x, g_Boxes[2].y-10), FONT_HERSHEY_TRIPLEX, 0.6, Scalar(0,0,200), 1, CV_AA);
+        putText(dstImg, "Exit", Point(g_Boxes[2].x-20, g_Boxes[2].y-10), FONT_HERSHEY_TRIPLEX, 0.6, Scalar(0,0,200), 1, CV_AA);
 
 
         //Yolo
@@ -882,19 +1231,24 @@ int newTrackVehicle(){
         yolo.detect(dstImg, yoloResult);
         int size = yoloResult.size();
         bool isFind = false;
+
+        int minWidth = 0;
         for(int i=0; i<size; i++){
             if(yoloResult[i].label == 2){
 
                 //Enrty & Exit
                 int cx = yoloResult[i].box.x + yoloResult[i].box.width/2;
                 int cy = yoloResult[i].box.y + yoloResult[i].box.height/2;
+
                 // Mask inside check
                 if( !(g_Boxes[0].x < cx && g_Boxes[0].x+g_Boxes[0].width > cx
                         && g_Boxes[0].y < cy && g_Boxes[0].y+g_Boxes[0].height > cy)){
-                    detectedRect = yoloResult[i].box;
+                    if(minWidth < yoloResult[i].box.width){
+                        detectedRect = yoloResult[i].box;
+                        minWidth = yoloResult[i].box.width;
+                        isFind = true;
+                    }
 //                    rectangle(dstImg, detectedRect, Scalar(200,200,0), 2, 1);
-                    isFind = true;
-                    break;
                 }
             }
         }
@@ -915,11 +1269,15 @@ int newTrackVehicle(){
             int cx2 = detectedRect.x + detectedRect.width/2;
             int cy2 = detectedRect.y + detectedRect.height/2;
 
-            if(g_Boxes[1].x >= cx2 && g_Boxes[2].y <= cy2){
+            if(g_Boxes[1].x >= cx2 && g_Boxes[2].y <= cy2){   //0204
+//            if(g_Boxes[1].x <= cx2 && g_Boxes[2].x >= cx2){   //0207
+//            if(g_Boxes[1].x <= cx2 && g_Boxes[2].y >= cy2){ //0001
                 frame_count++;
-                double spend_time = (double)frame_count*0.033;
+                double spend_time = (double)frame_count*0.033;  //0204
+//                double spend_time = (double)frame_count*0.036;  //0207
+//                double spend_time = (double)frame_count*0.033;  //0001
                 string strTime = strsprintf("%.1lfsec", spend_time);
-                putText(dstImg, strTime, Point(detectedRect.x, detectedRect.y-10), FONT_HERSHEY_TRIPLEX, 0.6, Scalar(250,0,0), 1, CV_AA);
+                putText(dstImg, strTime, Point(detectedRect.x, detectedRect.y-10), FONT_HERSHEY_TRIPLEX, 0.6, Scalar(200,0,200), 1, CV_AA);
                 rectangle(dstImg, detectedRect, Scalar(200,0,200), 2, 1);
             }else{
                 frame_count = 0;
@@ -948,17 +1306,17 @@ int newTrackVehicle(){
 
 int main(int argc, char *argv[])
 {
-//    caffeTest();
-//    cudaTest();
     g_isBebug = true;
-//    yoloTest();
-//    trackingGpu();
-//    pano_test();
-//    pano_test2();
-//    stich5();
-    newTrackVehicle();
-//    optFlowTracking();
-
+//    trackVehicle3();
+//    trackVehicle2();
+    //    caffeTest();
+    //    cudaTest();
+    //    yoloTest();
+    trackingGpu();
+    //    pano_test();
+    //    pano_test2();
+    //    stich5();
+    //    optFlowTracking();
     return 0;
 }
 
@@ -1134,111 +1492,4 @@ int pano_test(){
     return 0;
 }
 
-int pano_test2(){
-
-    int camNum = 4;
-    VideoCapture vcap[4];
-    string camAddress[4];
-    Panorama pano;
-//    pano.setGpu(true);
-    TickMeter meter;
-    Mat grayImg, knnImg;
-    Ptr<BackgroundSubtractorKNN> pKNN = createBackgroundSubtractorKNN();
-    bool isFirst = true;
-    Rect2d dtcRect;
-
-    if(g_isBebug){
-        for(int i=0; i<camNum; i++){
-            camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
-        }
-    }else{
-        camAddress[0] = "rtsp://192.168.5.103:554/s1";
-        camAddress[1] = "rtsp://192.168.5.7:554/s1";
-        camAddress[2] = "rtsp://192.168.5.118:554/s1";
-        camAddress[3] = "rtsp://192.168.5.8:554/s1";
-    }
-
-//    Mat frame[3];
-    vector<Mat> frame(4);
-    vector<Mat> srcImg(4);
-    Mat panoImg;
-    string window_name[4];
-    bool isVideo = true;
-
-    if(!isVideo){
-        for(int i=0; i<camNum; i++){
-            window_name[i] = strsprintf("camNo%d", i+1);
-            camAddress[i] = strsprintf("./images/cam%d.jpg", i+1);
-//            frame[i] = imread(camAddress[i], IMREAD_GRAYSCALE );
-
-        }
-        while (1) {
-            for(int i=0; i<camNum; i++){
-                imshow(window_name[i], frame[i]);
-            }
-
-            if(waitKey(10) == 27){
-                break;
-            }
-        }
-        pano.estimateAndCompose(frame, panoImg);
-
-    }else{
-
-        for(int i=0; i<camNum; i++){
-            if (!vcap[i].open(camAddress[i])) {
-                cout << "error opening camera stream ...." << i << endl;
-                return -1;
-            }
-            window_name[i] = strsprintf("camNo%d", i+1);
-        }
-
-        bool is_first = true;
-        while (1) {
-            for(int i=0; i<camNum; i++){
-                if(!vcap[i].read(frame[i])){
-                    cout << "capture error" << endl;
-                    break;
-                }
-                resize(frame[i], srcImg[i], Size(), 0.5, 0.5);
-                cvtColor(srcImg[i], srcImg[i], COLOR_BGR2GRAY);
-//                imshow(window_name[i], frame[i]);
-            }
-            meter.reset();
-            meter.start();
-            if(is_first){
-                pano.estimateAndCompose(srcImg, panoImg);
-                is_first = false;
-            }else{
-                pano.composePanorama(srcImg, panoImg);
-            }
-            meter.stop();
-            std::cout << meter.getTimeMilli() << "ms" << std::endl;
-
-            //tracking
-//            cvtColor(result, grayImg, COLOR_BGR2GRAY);
-            pKNN->apply(panoImg, knnImg);
-
-            if(!isFirst){
-                if( labelling(knnImg, dtcRect, 800) ){
-                    rectangle(panoImg, dtcRect, Scalar(200,200,200), 2);
-                }
-            }else{
-                isFirst = false;
-            }
-
-            imshow("panorama image", panoImg);
-
-            if(waitKey(10) == 27){
-                break;
-            }
-        }
-    }
-
-    destroyAllWindows();
-
-
-//    stich3(frame);
-    return 0;
-}
 */
