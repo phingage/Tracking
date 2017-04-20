@@ -595,7 +595,7 @@ int trackingGpu(void)
     if(g_isBebug){
         for(int i=0; i<camNum; i++){
 //            camAddress[i] = strsprintf("./Videos/s_cam%d.avi", i+1);
-            camAddress[i] = strsprintf("./Videos/Fingermark-video/Camera%d.mp4", i+1);
+            camAddress[i] = strsprintf("./Videos/Fingermark-video/19-4-16/Camera%d.mp4", i+1);
         }
     }else{
         camAddress[0] = "rtsp://192.168.5.103:554/s1";
@@ -1302,6 +1302,120 @@ int trackVehicle2(){
 }
 
 
+int pano_test(){
+
+    int camNum = 4;
+    VideoCapture vcap[camNum];
+    string camAddress[camNum];
+
+    if(g_isBebug){
+        for(int i=0; i<camNum; i++)
+//            camAddress[i] = strsprintf("./Videos/Fingermark-video/19-4-16/Camera%d.mp4", i+1);
+            camAddress[i] = strsprintf("./Videos/cam%d.avi", i+1);
+    }else{
+        camAddress[0] = "rtsp://192.168.5.103:554/s1";
+        camAddress[1] = "rtsp://192.168.5.7:554/s1";
+        camAddress[2] = "rtsp://192.168.5.118:554/s1";
+        camAddress[3] = "rtsp://192.168.5.8:554/s1";
+    }
+
+    bool try_use_gpu = false;
+    Stitcher::Mode mode = Stitcher::PANORAMA;
+    Stitcher stitcher = Stitcher::createDefault(try_use_gpu);
+
+    stitcher.setFeaturesFinder(new detail::OrbFeaturesFinder());
+
+//    stitcher.setWarper(new CylindricalWarperGpu());
+//    stitcher.setFeaturesFinder(new detail::OrbFeaturesFinder(Size(3,1),500));
+//    stitcher.setWaveCorrection(false);
+//    stitcher.setSeamEstimationResol(0.001);
+//    stitcher.setPanoConfidenceThresh(0.1);
+
+////    stitcher.setSeamFinder(new cv::detail::GraphCutSeamFinder(cv::detail::GraphCutSeamFinderBase::COST_COLOR_GRAD));
+//    stitcher.setSeamFinder(new detail::NoSeamFinder());
+//    stitcher.setBlender(detail::Blender::createDefault(detail::Blender::NO, true));
+//    //stitcher.setExposureCompensator(cv::detail::ExposureCompensator::createDefault(cv::detail::ExposureCompensator::NO));
+//    stitcher.setExposureCompensator(new detail::NoExposureCompensator());
+
+
+
+    Mat panoImg;
+//    UMat panoImgGpu;
+    cuda::GpuMat panoImgGpu;
+    vector<Mat> imgs(camNum);
+//    vector<cuda::GpuMat> imgs(camNum);
+//    vector<UMat> imgs(4);
+    Mat frame[camNum];
+    string window_name[camNum];
+
+    for(int i=0; i<camNum; i++){
+        if (!vcap[i].open(camAddress[i])) {
+            cout << "error opening camera stream ...." << i << endl;
+            return -1;
+        }
+        window_name[i] = strsprintf("camNo%d", i+1);
+    }
+
+
+    bool is_first = true;
+    while (1) {
+        for(int i=0; i<camNum; i++){
+            if(!vcap[i].read(frame[i])){
+                cout << "capture error" << endl;
+                break;
+            }
+//            imgs[i].upload(frame[i]);
+            imgs[i] = frame[i];
+            imshow(window_name[i], frame[i]);
+        }
+
+//        if(is_first){
+//            Stitcher::Status status0 = stitcher.estimateTransform(imgs);
+//            is_first = false;
+//        }else{
+//            Stitcher::Status status = stitcher.composePanorama(imgs, panoImg);
+//            if (status != Stitcher::OK)
+//            {
+//                cout << "Can't stitch images, error code = " << int(status) << endl;
+//                return -1;
+//            }
+//            imshow("pano", panoImg);
+//        }
+
+
+        if(waitKey(10) == 27){
+            break;
+        }
+    }
+    destroyAllWindows();
+    for(int i=0; i<camNum; i++){
+        string filename = strsprintf("cam%d.jpg", i+1);
+        imwrite(filename, imgs[i]);
+        vcap[i].release();
+    }
+
+
+    Stitcher::Status status = stitcher.stitch(imgs, panoImg);
+//    Stitcher::Status status0 = stitcher.estimateTransform(imgs);
+//    Stitcher::Status status = stitcher.composePanorama(imgs, panoImgGpu);
+    if (status != Stitcher::OK)
+    {
+        cout << "Can't stitch images, error code = " << int(status) << endl;
+        return -1;
+    }
+//    panoImgGpu.download(panoImg);
+    imwrite("pano.jpg", panoImg);
+//    imwrite("pano.jpg", panoImgGpu);
+
+    while(1){
+        imshow("pano", panoImg);
+        if(waitKey(10) == 27){
+            break;
+        }
+    }
+
+    return 0;
+}
 
 
 int main(int argc, char *argv[])
@@ -1313,7 +1427,7 @@ int main(int argc, char *argv[])
     //    cudaTest();
     //    yoloTest();
     trackingGpu();
-    //    pano_test();
+//    pano_test();
     //    pano_test2();
     //    stich5();
     //    optFlowTracking();
@@ -1393,103 +1507,5 @@ int optFlowTracking(void)
 }
 
 
-int pano_test(){
-
-    int camNum = 4;
-    VideoCapture vcap[4];
-    string camAddress[4];
-    camAddress[0] = "rtsp://192.168.5.103:554/s1";
-    camAddress[1] = "rtsp://192.168.5.7:554/s1";
-    camAddress[2] = "rtsp://192.168.5.118:554/s1";
-    camAddress[3] = "rtsp://192.168.5.8:554/s1";
-
-    bool try_use_gpu = true;
-    Stitcher::Mode mode = Stitcher::PANORAMA;
-    Stitcher stitcher = Stitcher::createDefault(try_use_gpu);
-
-    stitcher.setWarper(new CylindricalWarperGpu());
-//    stitcher.setFeaturesFinder(new detail::OrbFeaturesFinder(Size(3,1),500));
-//    stitcher.setWaveCorrection(false);
-//    stitcher.setSeamEstimationResol(0.001);
-//    stitcher.setPanoConfidenceThresh(0.1);
-
-////    stitcher.setSeamFinder(new cv::detail::GraphCutSeamFinder(cv::detail::GraphCutSeamFinderBase::COST_COLOR_GRAD));
-//    stitcher.setSeamFinder(new detail::NoSeamFinder());
-//    stitcher.setBlender(detail::Blender::createDefault(detail::Blender::NO, true));
-//    //stitcher.setExposureCompensator(cv::detail::ExposureCompensator::createDefault(cv::detail::ExposureCompensator::NO));
-//    stitcher.setExposureCompensator(new detail::NoExposureCompensator());
-
-
-
-    Mat panoImg;
-//    UMat panoImgGpu;
-    cuda::GpuMat panoImgGpu;
-//    vector<Mat> imgs(4);
-    vector<cuda::GpuMat> imgs(4);
-//    vector<UMat> imgs(4);
-    Mat frame[4];
-    string window_name[4];
-
-    for(int i=0; i<camNum; i++){
-        if (!vcap[i].open(camAddress[i])) {
-            cout << "error opening camera stream ...." << i << endl;
-            return -1;
-        }
-        window_name[i] = strsprintf("camNo%d", i+1);
-    }
-
-
-    bool is_first = true;
-    while (1) {
-        for(int i=0; i<camNum; i++){
-            if(!vcap[i].read(frame[i])){
-                cout << "capture error" << endl;
-                break;
-            }
-            imgs[i].upload(frame[i]);
-//            imgs[i] = frame[i];
-            imshow(window_name[i], frame[i]);
-        }
-
-//        if(is_first){
-//            Stitcher::Status status0 = stitcher.estimateTransform(imgs);
-//            is_first = false;
-//        }else{
-//            Stitcher::Status status = stitcher.composePanorama(imgs, panoImg);
-//            if (status != Stitcher::OK)
-//            {
-//                cout << "Can't stitch images, error code = " << int(status) << endl;
-//                return -1;
-//            }
-//            imshow("pano", panoImg);
-//        }
-
-
-        if(waitKey(10) == 27){
-            break;
-        }
-    }
-    destroyAllWindows();
-    for(int i=0; i<4; i++){
-        string filename = strsprintf("cam%d.jpg", i+1);
-        imwrite(filename, imgs[i]);
-        vcap[i].release();
-    }
-
-
-//    Stitcher::Status status = stitcher.stitch(imgs, panoImg);
-//    Stitcher::Status status0 = stitcher.estimateTransform(imgs);
-//    Stitcher::Status status = stitcher.composePanorama(imgs, panoImgGpu);
-//    if (status != Stitcher::OK)
-//    {
-//        cout << "Can't stitch images, error code = " << int(status) << endl;
-//        return -1;
-//    }
-//    panoImgGpu.download(panoImg);
-//    imwrite("pano.jpg", panoImg);
-//    imwrite("pano.jpg", panoImgGpu);
-
-    return 0;
-}
 
 */

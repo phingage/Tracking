@@ -48,7 +48,8 @@ bool Panorama::hFromRansac( cv::Mat &image1, cv::Mat &image2, cv::Mat &homograph
 
 
     // 対応点を絞る
-    const auto match_par = .6f; //対応点のしきい値
+//    const auto match_par = .6f; //対応点のしきい値
+    const auto match_par = .8f; //対応点のしきい値
     std::vector<cv::DMatch> good_matches;
 
     std::vector<cv::Point2f> match_point1;
@@ -252,9 +253,9 @@ int Panorama::estimateAndCompose(std::vector<cv::Mat> &imgs, cv::Mat &result)
     m_dstImg.copyTo(result);
 //    cv::imshow( "Mosaicing", m_dstImg );
 //    cv::imwrite( "Mosa.jpg", m_dstImg );
-//    cv::imshow( "left", leftStitch[m_nLeft] );
-//    cv::imshow( "right", rightStitch[m_nRight] );
-//    cv::waitKey();
+    cv::imshow( "left", leftStitch[m_nLeft] );
+    cv::imshow( "right", rightStitch[m_nRight] );
+    cv::waitKey();
 
 
     return 0;
